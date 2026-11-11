@@ -44,9 +44,11 @@ path = "src/besh/__about__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/besh"]
+core-metadata-version = "2.4"
 
 [tool.hatch.build.targets.sdist]
 include = ["src/besh", "tests", "README.md"]
+core-metadata-version = "2.4"
 
 [tool.hatch.envs.types]
 extra-dependencies = [
