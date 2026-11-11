@@ -1,3 +1,4 @@
 .pytest_cache/
 .workbuddy/
 __pycache__/
+dist/
