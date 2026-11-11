@@ -5,41 +5,60 @@ build-backend = "hatchling.build"
 [project]
 name = "besh"
 dynamic = ["version"]
-description = ''
+description = "Beacon Shell：让 Agent 把计算任务交给闲置算力（手机 Termux / 云 IDE / 云 Notebook）"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = "MIT"
-keywords = []
+keywords = ["tmux", "remote", "agent", "beacon", "worker", "rclone"]
 authors = [
   { name = "cqian-cs", email = "cqian.cs@qq.com" },
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
 ]
-dependencies = []
+dependencies = [
+  "sqless>=5.0.1",
+  "aiohttp>=3.8",
+  "aiofiles>=22.1",
+  "orjson>=3.6",
+]
+
+[project.scripts]
+besh = "besh.cli:main"
 
 [project.urls]
 Documentation = "https://github.com/cqian-cs/besh#readme"
 Issues = "https://github.com/cqian-cs/besh/issues"
 Source = "https://github.com/cqian-cs/besh"
 
+[project.optional-dependencies]
+test = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
 [tool.hatch.version]
 path = "src/besh/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/besh"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/besh", "tests", "README.md"]
 
 [tool.hatch.envs.types]
 extra-dependencies = [
   "mypy>=1.0.0",
 ]
+
 [tool.hatch.envs.types.scripts]
 check = "mypy --install-types --non-interactive {args:src/besh tests}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 source_pkgs = ["besh", "tests"]

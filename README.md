@@ -1,79 +1,48 @@
-# Beacon Shell
+# Beacon Shell (besh)
 
-这是一个利用闲置算力的工具，让Agent可以把计算任务交给闲置算力做。
+**把闲置算力变成 AI Agent 可远程操作的工人。**
 
-闲置算力包括：手机Termux、免费的云IDE、云NoteBook。
+闲置算力随处可见：手机 Termux、免费的云 IDE、云 Notebook……但它们大多没有公网 IP，没法通过 SSH 远程操作。
 
-这些闲置算力没有独立的公网IP，不方便通过ssh远程操作，于是就有了besh。
+besh 用一个"信标 + 工人"的架构解决这个问题：只要闲置终端能访问外网，就能反向连接信标、领取命令、回传结果——你（或你的 AI Agent）则可以像操作 tmux 一样操作散落在各处的机器。
 
-## besh的四个角色
+```mermaid
+flowchart TB
+    UR["人类"]
+    AG["AI Agent"]
+    RC["本地电脑<br>besh run -t 工人ID:窗口名 命令"]
+    BE["公网服务器<br>besh serve"]
 
-### 信标（云服务器，有公网IP）
+    UR -- CLI --> RC
+    UR -- Web --> BE
+    AG -- CLI --> RC -- API --> BE
+    AG -- MCP --> BE
 
-信标用于中转命令、记录系统状态、并且提供Web操作界面。
+    BE <-- "轮询取命令 <br> 回传屏幕 / 结果" --> W1["闲置算力<br>besh worker 工人ID"]
+    BE <-- "轮询取命令 <br> 回传屏幕 / 结果" --> W2["闲置算力<br>besh worker 工人ID"]
 
-```bash
-export besh_secret=CHANGE_TO_YOUR_PASSWORD
-besh serve
-```
-这会通过创建./besh_beacon.py作为主程序，运行既为服务端。
+    W1 -.->|"rclone 定时备份"| R2[("对象存储<br>Cloudflare R2")]
+    W2 -.->|"rclone 定时备份"| R2
 
-### 工人（任意终端，无公网IP）
+    classDef purple fill:#ede9fe,stroke:#7c3aed,color:#1e293b
+    classDef blue fill:#dbeafe,stroke:#2563eb,color:#1e293b
+    classDef green fill:#d1fae5,stroke:#059669,color:#1e293b
+    classDef amber fill:#fef3c7,stroke:#d97706,color:#1e293b
 
-工人向信标轮询命令，发送到对应的tmux窗口执行。
-
-```bash
-export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
-besh worker WORKER_ID
-```
-
-
-
-### 遥控器（本地电脑）
-
-遥控器就类似于tmux，唯一区别在于把session（操作多个会话）替换为工人ID（操作多个工人）
-
-```bash
-export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
-# 列出所有工人
-besh ls
-besh list-sessions
-besh list-workers
-# 列出所有窗口
-besh list-windows -t WORKER_ID
-# 查看指定窗口
-besh capture-pane -t WORKER_ID:WINDOW_NAME -p -S -50
-# 发送按键到指定窗口（窗口不存在则自动创建）
-besh send-keys -t WORKER_ID:WINDOW_NAME "ls -l" Enter
-# 发送按键到指定窗口，加 -l 把命令当字面意思处理
-besh send-keys -t WORKER_ID:WINDOW_NAME -l 'echo "Hello $USER"'
+    class RC,AG,UR purple
+    class BE blue
+    class W1,W2 green
+    class R2 amber
 ```
 
-### 对象存储（Cloudflare R2）
+## 四个角色
 
-假设工人是临时的、会随时释放，所以要备份工人的工作目录。
-
-信标（公网服务器）带宽贵，网速慢，不适合备份工作目录。
-
-[Cloudflare R2](https://developers.cloudflare.com/r2/) 提供免费10GB的存储空间，网速快，所以用它备份工作目录。
-
-1. 开通Cloudflare R2对象存储，创建存储桶：`besh`
-2. 安装[rclone](https://rclone.org/install/)
-```bash
-sudo -v ; curl https://rclone.org/install.sh | sudo bash
-```
-3. 配置rclone的环境变量，用来访问Cloudflare R2对象存储
-```bash
-export RCLONE_CONFIG_CF_TYPE=s3
-export RCLONE_CONFIG_CF_PROVIDER=Cloudflare
-export RCLONE_CONFIG_CF_ACCESS_KEY_ID=
-export RCLONE_CONFIG_CF_SECRET_ACCESS_KEY=
-export RCLONE_CONFIG_CF_ENDPOINT=
-export RCLONE_CONFIG_CF_REGION=auto
-```
-
-工人的工作目录存储于`cf:besh/YYYY-MM-DD/WORKER_ID/*`
-
+| 角色 | 运行位置 | 职责 |
+|------|----------|------|
+| 信标 | 有公网 IP 的服务器 | 中转命令、记录状态、提供 Web 界面与 MCP 接口 |
+| 工人 | 任意闲置终端（无公网 IP） | 轮询信标领命令，在 tmux 窗口里执行，定时备份工作目录 |
+| 遥控器 | 本地电脑 | 类似 tmux 的命令行，把 session 换成工人 ID，可同时操作多台 |
+| 对象存储 | Cloudflare R2 | 备份工人工作目录（工人是临时的，随时会释放） |
 
 ## 安装
 
@@ -81,12 +50,168 @@ export RCLONE_CONFIG_CF_REGION=auto
 pip install besh
 ```
 
+要求 Python ≥ 3.10。工人机器上还需要安装 [tmux](https://github.com/tmux/tmux)。
+
+## 快速开始
+
+### 1. 启动信标（云服务器）
+
+```bash
+export besh_secret=CHANGE_TO_YOUR_PASSWORD
+besh serve
+```
+
+启动时会生成自包含的 `besh_beacon.py`（主程序）和 `www/index.html`（Web 界面），数据存放在 `./db/`。默认监听 `12242` 端口，输出类似：
+
+```
+  工人连接 : export besh_url=http://<HOST>:12242?secret=xxx
+  浏览器   : http://<HOST>:12242/?secret=xxx
+  MCP      : http://<HOST>:12242/mcp  (Authorization: Bearer xxx)
+```
+
+### 2. 接入工人（闲置终端）
+
+```bash
+export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
+besh worker WORKER_ID
+```
+
+- 会创建 `./WORKER_ID` 作为工作目录，后续所有命令都在这个目录里执行
+- 通过 tmux 启动 `besh_worker` 会话（创建窗口、执行命令）和 `besh_sync` 会话（定时把工作目录同步到对象存储）
+
+### 3. 远程操作（本地电脑）
+
+```bash
+export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
+
+# 列出所有工人（ls / list-sessions / list-workers 等价）
+besh ls
+
+# 列出某工人的所有窗口
+besh list-windows -t WORKER_ID
+
+# 查看窗口内容（同 tmux capture-pane）
+besh capture-pane -t WORKER_ID:WINDOW_NAME -p -S -50
+
+# 发送按键（窗口不存在会自动创建）
+besh send-keys -t WORKER_ID:WINDOW_NAME "ls -l" Enter
+
+# 发送按键，-l 按字面处理（不展开变量）
+besh send-keys -t WORKER_ID:WINDOW_NAME -l 'echo "Hello $USER"'
+
+# 执行一条命令并打印输出（体验类似 ssh host cmd）
+besh run -t WORKER_ID "uname -a"
+
+# 跑长任务：先输入不等待，稍后等它执行完（窗口回到提示符）
+besh type -t WORKER_ID:WINDOW_NAME "python train.py"
+besh wait -t WORKER_ID:WINDOW_NAME
+```
+
+## 对象存储（Cloudflare R2）
+
+信标带宽贵、网速慢，不适合备份工作目录；[Cloudflare R2](https://developers.cloudflare.com/r2/) 免费 10GB 且网速快，所以用它。工人工作目录备份在 `cf:besh/YYYY-MM-DD/WORKER_ID/*`。
+
+1. 开通 Cloudflare R2，创建存储桶 `besh`
+2. 在信标与工人机器上安装 [rclone](https://rclone.org/install/)：
+
+   ```bash
+   sudo -v ; curl https://rclone.org/install.sh | sudo bash
+   ```
+
+3. 配置 rclone 环境变量访问 R2：
+
+   ```bash
+   export RCLONE_CONFIG_CF_TYPE=s3
+   export RCLONE_CONFIG_CF_PROVIDER=Cloudflare
+   export RCLONE_CONFIG_CF_ACCESS_KEY_ID=
+   export RCLONE_CONFIG_CF_SECRET_ACCESS_KEY=
+   export RCLONE_CONFIG_CF_ENDPOINT=
+   export RCLONE_CONFIG_CF_REGION=auto
+   ```
+
+配置好后，遥控器即可管理备份：
+
+```bash
+besh backup  -t WORKER_ID              # 立刻备份（不等定时任务）
+besh restore -t WORKER_ID              # 从最新备份恢复工作目录
+besh files  -t WORKER_ID               # 列出对象存储里的备份文件
+besh download / besh upload / besh rm  # 下载 / 上传 / 删除文件
+```
+
+## Web 操作界面
+
+浏览器打开 `http://BEACON-HOST:12242?secret=xxx`：
+
+- 每个工人的实时状态（主机名、工作目录、窗口列表、在线状态）
+- 完善的 WebShell：实时屏幕、输入框、`^C` / `^D` / `Tab` / `↑` / `↓` / `Esc` 按键助手
+- 基于对象存储的文件上传 / 下载 / 直链分享
+
+## AI Agent 接入
+
+besh 为 AI Agent 提供两条通道，任选其一：
+
+**MCP**（信标内置）：
+
+```bash
+besh mcp          # 打印 MCP 客户端配置
+besh mcp --write ~/.workbuddy/mcp.json   # 直接写入客户端配置
+```
+
+**CLI 技能**（把 besh 命令教给 Agent）：
+
+```bash
+besh skill        # 打印 SKILL.md
+besh skill --install ~/.workbuddy/skills/   # 安装为 Agent 技能
+```
+
+## 命令一览
+
+| 命令 | 说明 |
+|------|------|
+| `besh serve` | 在当前目录启动信标 |
+| `besh worker ID` | 以工人身份接入信标 |
+| `besh ls` | 列出所有工人 |
+| `besh list-windows -t ID` | 列出工人的窗口 |
+| `besh capture-pane -t ID:WIN` | 查看窗口内容 |
+| `besh send-keys -t ID:WIN …` | 向窗口发送按键 |
+| `besh type -t ID:WIN TEXT` | 输入文本（可选回车），Agent 友好 |
+| `besh run -t ID:WIN CMD` | 执行命令并打印输出 |
+| `besh new-window` / `kill-window` | 新建 / 关闭窗口 |
+| `besh kill-worker -t ID` | 让工人退出（tmux 会话一并关闭） |
+| `besh wait -t ID:WIN` | 等待窗口回到提示符（命令执行完毕） |
+| `besh wait CMD_ID` | 等待某条异步命令的回执 |
+| `besh history` / `besh info` | 命令历史 / 工人详情 |
+| `besh files` / `download` / `upload` / `rm` | 管理对象存储里的文件 |
+| `besh backup` / `restore` | 备份 / 恢复工作目录 |
+| `besh mcp` / `besh skill` | 生成 MCP / Agent 技能配置 |
+
+环境变量：`besh_url`（信标地址）、`besh_secret`（密钥）。也可以用 `-u` / `--secret` 参数临时指定，或 `--json` 输出 JSON。
+
+## 可靠性设计
+
+- **命令不丢**：命令入队即落盘（sqlite）。信标重启后，pending 和已投递未回执的命令都会重新排队；工人侧用执行记录去重，最坏情况重复执行一次（at-least-once）。
+- **屏幕秒回**：工人定期把各窗口屏幕快照推给信标缓存，`capture-pane` 无需等待。
+- **投递超时重排**：命令投递后 120 秒无回执，自动重新排队（工人可能已重启）。
+- **安全模型**：单一密钥认证（信标侧）；工人本身处在容器 / 虚拟机内，不提供额外的安全隔离。
+
 ## 实现细节
-1. 信标采用 [sqless](https://github.com/cqian-cs/sqless) 作为后端框架（简易单一用户认证+数据库读写+函数转API+函数转MCP）
-    - 运行`besh serve`，会在当前路径下通过`sqless --app besh_beacon.py`创建服务端代码`besh_beacon.py`
-2. 工人本身就处在容器/虚拟机内，因此不提供安全隔离机制。
-    - 运行`besh worker WORKER_ID` 会通过`mkdir ./WORKER_ID; cd ./WORKER_ID` 进入工作目录，后续轮询到的指令都在此目录下执行。
-    - 工人会通过tmux启动一个`besh_sync`的session用于同步工作目录到对象存储
-    - 工人会通过tmux启动一个`besh_worker`的session用于创建窗口、执行命令
-3. http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD 会提供每个worker的状态，以及完善的WebShell、文件上传下载（基于对象存储）。
-4. 遥控器为AI Agent提供命令行。AI Agent既可以通过信标MCP操作，又可以通过命令行SKILL操作。
+
+1. 信标基于 [sqless](https://github.com/cqian-cs/sqless) 框架（简易单用户认证 + sqlite 数据库 + 函数转 API + 函数转 MCP）。`besh serve` 会在当前路径通过 `sqless --app besh_beacon.py` 生成服务端代码。
+2. 工人内部跑两个 tmux 会话：`besh_worker`（窗口与命令执行）和 `besh_sync`（定时 rclone 备份）。
+3. 遥控器客户端只依赖 Python 标准库。
+
+## 开发
+
+```bash
+git clone https://github.com/cqian-cs/besh
+cd besh
+pip install -e . --no-build-isolation
+pip install -e ".[test]"
+pytest
+```
+
+测试包含 55 个单元/集成测试；`tests/fake_worker.py` 提供不依赖 tmux 的假工人，可用于本地联调。
+
+## License
+
+MIT © [cqian-cs](https://github.com/cqian-cs)
