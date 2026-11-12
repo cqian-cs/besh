@@ -192,3 +192,21 @@ def human_size(num: Any) -> str:
 def shorten(text: str, limit: int = 60) -> str:
     text = (text or "").replace("\n", " ⏎ ")
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def extract_marker(content: str, marker: str) -> Tuple[Optional[int], str]:
+    """从屏幕内容里切出哨兵行的退出码与命令输出（信标和工人都用）。"""
+    pattern = re.compile(rf"^{re.escape(marker)}(\d+)$")
+    lines = (content or "").splitlines()
+    end = None
+    code = 0
+    for i, line in enumerate(lines):
+        m = pattern.match(line.strip())
+        if m:
+            end = i
+            code = int(m.group(1))
+    if end is None:
+        return None, ""
+    starts = [i for i in range(end) if marker in lines[i]]
+    start = max(starts) if starts else -1
+    return code, "\n".join(lines[start + 1 : end]).strip("\n")

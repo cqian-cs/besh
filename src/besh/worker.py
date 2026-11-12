@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shlex
 import shutil
 import socket
@@ -26,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .client import Beacon
 from .util import (
     BeshError,
+    extract_marker,
     DEFAULT_SYNC_INTERVAL,
     getenv,
     getenv_int,
@@ -37,6 +39,11 @@ from .util import (
 
 SESSION_WORKER = "besh_worker"
 SESSION_SYNC = "besh_sync"
+
+# 空闲时若长轮询“秒回空”（小于该秒数），说明没起到阻塞作用，需要退避防空转
+IDLE_FAST_RETURN = 1.0
+# 退避基数（实际会加 0~100% 随机抖动，避免多工人同时重连形成尖峰）
+IDLE_BACKOFF = 0.5
 
 
 # --------------------------------------------------------------------- tmux 基础
@@ -457,6 +464,7 @@ class Worker:
     def _loop(self) -> None:
         errors = 0
         while not self.stop:
+            started = time.monotonic()
             try:
                 ret = self.beacon.poll(self.id, self._meta(), wait=self.poll_wait)
                 errors = 0
@@ -473,10 +481,25 @@ class Worker:
                 kill_sessions()
                 self.stop = True
                 break
+            executed = 0
             for cmd in ret.get("data") or []:
                 self._exec(cmd)
+                executed += 1
+            self._pace(executed, time.monotonic() - started)
+
+    def _pace(self, executed: int, elapsed: float) -> None:
+        """控制请求节奏，兼顾实时性与信标压力。
+
+        * 执行过命令：节流 interval 秒（避免连续命令挤爆工人和信标）
+        * 空闲且长轮询确实挂起过（elapsed 接近 poll_wait）：立刻续上，命令零延迟
+        * 空闲但服务端秒回空（超时配置过小 / 代理断流 / 重启瞬间）：
+          小幅退避，避免工人空转把信标打满
+        """
+        if executed:
             if self.interval:
                 time.sleep(self.interval)
+        elif elapsed < IDLE_FAST_RETURN:
+            time.sleep(IDLE_BACKOFF + random.uniform(0, IDLE_BACKOFF))
 
     def _exec(self, cmd: dict) -> None:
         cmd_id = str(cmd.get("id") or "")
@@ -534,10 +557,45 @@ class Worker:
             return out, code, ("done" if code == 0 else "error")
         if kind == "shell":
             return self._shell(str(args.get("command") or ""))
+        if kind == "run":
+            return self._run(
+                str(args.get("command") or ""),
+                str(args.get("window") or ""),
+                int(args.get("timeout") or 30),
+            )
         if kind == "exit":
             self.stop = True
             return "bye", 0, "done"
         return f"未知命令类型: {kind}", 1, "error"
+
+    def _run(self, command: str, window: str = "", timeout: int = 30) -> Tuple[str, int, str]:
+        """在本地 tmux 里执行一条命令并取回输出（哨兵法，全在工人侧完成）。
+
+        放在工人侧做，免去"信标反复抓屏"的网络往返：信标只发一条命令、
+        等一次回执，交互延迟从多次往返降到一次。
+        """
+        command = command.strip()
+        if not command:
+            return "命令为空", 1, "error"
+        window = resolve_window(window, SESSION_WORKER)
+        marker = f"__BESH_{os.urandom(4).hex()}__"
+        line = f'{command}; echo "{marker}$?"'
+        err = send_keys(window, [line, "Enter"], workdir=self.workdir)
+        if err:
+            return err, 1, "error"
+        deadline = time.monotonic() + max(1, min(timeout, 600))
+        content = ""
+        while time.monotonic() < deadline:
+            content = capture(window, lines=400, escapes=False)
+            code, body = extract_marker(content, marker)
+            if code is not None:
+                return body, code, "done"
+            time.sleep(0.1)
+        return (
+            f"命令在 {timeout}s 内没有结束（可能进入了交互式程序）\n{content[-1500:]}",
+            124,
+            "error",
+        )
 
     def _shell(self, command: str) -> Tuple[str, int, str]:
         if not command:

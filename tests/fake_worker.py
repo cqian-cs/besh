@@ -80,6 +80,15 @@ class FakeShell:
             return "", 0, "done"
         if kind == "shell":
             return "fake", 0, "done"
+        if kind == "run":
+            command = str(args.get("command") or "").strip()
+            if not command:
+                return "命令为空", 1, "error"
+            state = self.windows.setdefault(window, self._new_window())
+            state["lines"].append("$ " + command)
+            state["lines"].append("ran: " + command)
+            state["cur"] = "$ "
+            return "ran: " + command, 0, "done"
         return "unknown command", 1, "error"
 
     def meta(self) -> dict:

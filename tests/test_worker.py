@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 """工人：tmux 命令拼装、命令分发、rclone 备份。"""
 
+import re
 import subprocess
 
 import pytest
@@ -229,3 +230,49 @@ def test_capture_empty_window_targets_active(monkeypatch):
     )
     assert worker_mod.capture("") == "$ "
     assert calls[-1][3] == "=besh_worker:main"  # capture-pane ... -t TARGET
+
+
+def test_pace_idle_after_long_poll_is_immediate(fake_worker, monkeypatch):
+    """长轮询确实阻塞过（elapsed 接近 wait）→ 空闲不睡，立刻续上，命令零延迟。"""
+    slept = []
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: slept.append(s))
+    fake_worker._pace(0, elapsed=19.8)
+    assert slept == []
+
+
+def test_pace_idle_on_fast_empty_backs_off(fake_worker, monkeypatch):
+    """服务端秒回空 → 退避（含随机抖动），避免工人空转打满信标。"""
+    slept = []
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: slept.append(s))
+    fake_worker._pace(0, elapsed=0.05)
+    assert len(slept) == 1
+    assert worker_mod.IDLE_BACKOFF <= slept[0] <= worker_mod.IDLE_BACKOFF * 2
+
+
+def test_pace_after_executing_throttles(fake_worker, monkeypatch):
+    """执行过命令 → 按 interval 节流。"""
+    slept = []
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: slept.append(s))
+    fake_worker._pace(2, elapsed=0.1)
+    assert slept == [fake_worker.interval]
+
+
+def test_run_executes_locally(fake_worker, monkeypatch):
+    """run 在工人本地完成：打命令 + 等哨兵 + 取输出。"""
+    sent = {}
+
+    def fake_send(window, keys, **kwargs):
+        sent["line"] = keys[0]
+        return ""
+
+    def fake_capture(window, lines=50, escapes=True, **kwargs):
+        marker = re.search(r"__BESH_[0-9a-f]+__", sent["line"]).group(0)
+        return f"$ {sent['line']}\nran: echo hi\n{marker}0\n$ "
+
+    monkeypatch.setattr(worker_mod, "send_keys", fake_send)
+    monkeypatch.setattr(worker_mod, "capture", fake_capture)
+
+    out, code, status = fake_worker._run("echo hi", window="main", timeout=5)
+    assert (status, code) == ("done", 0)
+    assert "ran: echo hi" in out
+    assert "__BESH_" not in out

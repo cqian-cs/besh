@@ -342,15 +342,15 @@ def test_ensure_secret_appends_missing_key(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_reports_capture_failure(bound, monkeypatch):
-    """抓不到屏时，错误信息要指明"抓屏失败"而不是含混的超时。"""
+async def test_run_reports_no_response(bound, monkeypatch):
+    """工人没响应时给出明确错误，而不是含混的超时。"""
     async def fake_request(*args, **kwargs):
         return None
 
     monkeypatch.setattr(B, "_request", fake_request)
     ret = await B.run("w1", "ls", window="main", timeout=1)
     assert ret["suc"] is False
-    assert "抓屏失败" in ret["msg"]
+    assert "没有响应" in ret["msg"]
 
 
 # ---------------- MCP inputSchema：标量类型不能被标成 object ----------------

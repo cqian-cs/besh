@@ -32,6 +32,7 @@ from . import storage
 from .store import Store
 from .util import (
     BeshError,
+    extract_marker,
     now_iso,
     safe_id,
     safe_window,
@@ -238,22 +239,8 @@ def _active_window(worker: str) -> str:
 
 
 def _extract_run(content: str, marker: str) -> tuple:
-    """从屏幕内容里切出命令输出与退出码。"""
-    pattern = re.compile(rf"^{re.escape(marker)}(\d+)$")
-    lines = content.splitlines()
-    end = None
-    code = 0
-    for i, line in enumerate(lines):
-        m = pattern.match(line.strip())
-        if m:
-            end = i
-            code = int(m.group(1))
-    if end is None:
-        return None, ""
-    starts = [i for i in range(end) if marker in lines[i]]
-    start = max(starts) if starts else -1
-    body = lines[start + 1 : end]
-    return code, "\n".join(body).strip("\n")
+    """从屏幕内容里切出命令输出与退出码（实现见 util.extract_marker）。"""
+    return extract_marker(content, marker)
 
 
 def _need_worker(worker: str) -> str:
@@ -442,7 +429,8 @@ async def type_text(
 async def run(worker: str, command: str, window: str = "", timeout: int = 30) -> dict:
     """在工人窗口执行一条 shell 命令并返回输出（相当于 ssh host "cmd"）。
 
-    实现方式：type 命令 + 一个随机哨兵，然后轮询屏幕直到哨兵出现。
+    整个"输入命令 → 等哨兵 → 读屏幕"的过程都在工人本地完成（tmux 就在它
+    身旁，没有网络往返），信标只发一次命令、收一次回执，延迟最低。
     """
     worker = _need_worker(worker)
     window = safe_window(window)
@@ -450,42 +438,26 @@ async def run(worker: str, command: str, window: str = "", timeout: int = 30) ->
     if not command:
         return {"suc": False, "msg": "命令为空"}
     timeout = max(1, min(to_int(timeout, 30), 600))
-    marker = f"__BESH_{os.urandom(4).hex()}__"
-    line = f'{command}; echo "{marker}$?"'
-    cmd = store().add(worker, "keys", {"window": window, "keys": [line, "Enter"], "literal": False})
-    _wake(worker)
-    deadline = time.monotonic() + timeout
-    content = ""
-    captured = False
-    while time.monotonic() < deadline:
-        row = await _request(
-            worker, "capture", {"window": window, "lines": 400, "escapes": False}, timeout=6
-        )
-        if row and row.get("status") == "done":
-            captured = True
-            content = row.get("output") or ""
-            code, body = _extract_run(content, marker)
-            if code is not None:
-                return {
-                    "suc": True,
-                    "worker": worker,
-                    "window": window or _active_window(worker),
-                    "cmd_id": cmd["id"],
-                    "exit_code": code,
-                    "output": body,
-                }
-        await asyncio.sleep(0.3)
-    if not captured:
-        msg = f"抓屏失败：工人 {worker} 无响应，或窗口「{window or '当前窗口'}」不存在"
-    else:
-        msg = f"命令在 {timeout}s 内没有结束（可能进入了交互式程序或工人离线）"
+    row = await _request(
+        worker,
+        "run",
+        {"window": window, "command": command, "timeout": timeout},
+        timeout=timeout + 8,
+    )
+    if not row or row.get("status") not in ("done", "error"):
+        return {
+            "suc": False,
+            "worker": worker,
+            "window": window,
+            "msg": f"工人 {worker} 没有响应（离线，或窗口「{window or '当前窗口'}」不存在）",
+        }
     return {
-        "suc": False,
+        "suc": row.get("status") == "done",
         "worker": worker,
-        "window": window,
-        "cmd_id": cmd["id"],
-        "msg": msg,
-        "output": content[-2000:] if content else "",
+        "window": window or _active_window(worker),
+        "cmd_id": row.get("key"),
+        "exit_code": int(row.get("exit_code") or 0),
+        "output": str(row.get("output") or ""),
     }
 
 

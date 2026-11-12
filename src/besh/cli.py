@@ -246,7 +246,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     target = parse_target(args.target)
     command = " ".join(args.command)
     ret = beacon(args).call(
-        "run", worker=target.worker, window=target.window, command=command, timeout=args.timeout
+        "run",
+        worker=target.worker,
+        window=target.window,
+        command=command,
+        timeout=args.timeout,
+        _timeout=args.timeout + 30,
     )
     if args.json:
         print(json.dumps(ret, ensure_ascii=False, indent=2, default=str))
