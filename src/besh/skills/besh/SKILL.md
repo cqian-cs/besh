@@ -11,13 +11,15 @@ besh 把没有公网 IP 的机器（手机 Termux、免费云 IDE、云 Notebook
 
 ## 前提
 
-信标地址和密钥通过环境变量提供（通常已经设置好）：
+信标地址和密钥通过环境变量提供（通常已经设置好，或写在当前目录 `.env` 里）：
 
 ```bash
 export besh_url=http://BEACON-HOST:12242?secret=PASSWORD
 # 或者分开设置
 export besh_secret=PASSWORD
 ```
+
+也可以每次用全局参数指定：`besh -u http://HOST:12242?secret=PASSWORD ls`
 
 先确认能连上：
 

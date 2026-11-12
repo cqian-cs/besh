@@ -289,19 +289,30 @@ def test_patch_cfg_updates_values(tmp_path, monkeypatch):
 
 # ---------------- .env：环境变量集中配置 ----------------
 
-def test_ensure_secret_writes_env_with_all_vars(tmp_path, monkeypatch):
-    """首次运行生成 .env：besh_secret + host/port/url 注释示例。"""
+def test_ensure_secret_writes_env(tmp_path, monkeypatch):
+    """首次运行生成 .env：只有 besh_secret，host/port/url 不出现在 .env 里。"""
     from besh import serve as S
 
     monkeypatch.delenv("besh_secret", raising=False)
-    value = S.ensure_secret(str(tmp_path), port=18080)
+    value = S.ensure_secret(str(tmp_path))
     assert value  # 返回的是密钥
     text = (pathlib.Path(str(tmp_path)) / ".env").read_text(encoding="utf-8")
     assert "besh_secret=" + value in text
-    assert "# besh_host=0.0.0.0" in text
-    assert "# besh_port=18080" in text
-    assert "# besh_url=http://YOUR-PUBLIC-IP:18080?secret=" + value in text
+    assert "besh_host" not in text  # host 在 besh_beacon.py 里
+    assert "besh_port" not in text
+    assert "besh_url" not in text
     assert not (pathlib.Path(str(tmp_path)) / ".besh_secret").exists()  # 不再生成 .besh_secret
+
+
+def test_worker_accepts_url_positional():
+    """besh worker ID URL：地址直接写在命令行，不依赖环境变量。"""
+    from besh.cli import build_parser
+
+    args = build_parser().parse_args(["worker", "w1", "http://1.2.3.4:12242?secret=abc"])
+    assert args.worker_id == "w1"
+    assert args.beacon_url == "http://1.2.3.4:12242?secret=abc"
+    args2 = build_parser().parse_args(["worker", "w1"])
+    assert args2.beacon_url is None
 
 
 def test_ensure_secret_reuses_existing_env(tmp_path, monkeypatch):

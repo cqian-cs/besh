@@ -84,7 +84,7 @@ if __name__ == "__main__":
 '''
 
 
-def ensure_secret(path_this: str, secret: Optional[str] = None, port: Optional[int] = None) -> str:
+def ensure_secret(path_this: str, secret: Optional[str] = None) -> str:
     """密钥优先级：命令行 > 环境变量 > .env 文件 > 新生成并写进 .env。"""
     if secret:
         return secret.strip()
@@ -105,19 +105,11 @@ def ensure_secret(path_this: str, secret: Optional[str] = None, port: Optional[i
         print(f"已在 {ENV_FILE} 中追加 besh_secret（请妥善保管）")
         return value
     value = secrets.token_urlsafe(12)
-    shown_port = int(port or getenv_int("besh_port") or DEFAULT_PORT)
     content = (
         "# besh 信标环境变量（besh serve / python besh_beacon.py 会自动加载，改完重启生效）\n"
         "# 注意：本文件含密钥，不要提交到 git\n"
+        "# 监听地址/端口不在这里——它们写在 besh_beacon.py 顶部（CFG_HOST / CFG_PORT）\n"
         "besh_secret=" + value + "\n"
-        "\n"
-        "# 监听地址/端口已写在 besh_beacon.py 顶部（CFG_HOST / CFG_PORT），\n"
-        "# 如需用环境变量覆盖，取消下面两行注释：\n"
-        "# besh_host=0.0.0.0\n"
-        "# besh_port=" + str(shown_port) + "\n"
-        "\n"
-        "# 工人 / 遥控器连接本信标用的地址（把 YOUR-PUBLIC-IP 换成公网 IP 后取消注释）：\n"
-        "# besh_url=http://YOUR-PUBLIC-IP:" + str(shown_port) + "?secret=" + value + "\n"
     )
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -234,7 +226,7 @@ def serve(
     load_env(path_this)  # 加载已有的 .env（不覆盖真实环境变量）
     fresh_host = host or getenv("besh_host") or "0.0.0.0"
     fresh_port = int(port or getenv_int("besh_port") or DEFAULT_PORT)
-    secret = ensure_secret(path_this, secret, port=fresh_port)
+    secret = ensure_secret(path_this, secret)
     app_path, created = write_app(path_this, reset=reset, host=fresh_host, port=fresh_port)
     if not created and (host or port):
         patch_cfg(app_path, host=host, port=port)

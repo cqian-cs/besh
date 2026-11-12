@@ -81,9 +81,10 @@ CFG_PORT = 8080        # 监听端口
 
 ### 2. 接入工人（闲置终端）
 
+地址直接写在命令行上，不需要环境变量：
+
 ```bash
-export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
-besh worker WORKER_ID
+besh worker WORKER_ID http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
 ```
 
 - 会创建 `./WORKER_ID` 作为工作目录，后续所有命令都在这个目录里执行
@@ -91,7 +92,11 @@ besh worker WORKER_ID
 
 ### 3. 远程操作（本地电脑）
 
+遥控器用全局 `-u` 参数指定信标，或设置 `besh_url` 环境变量（也可写在当前目录 `.env` 里）：
+
 ```bash
+besh -u http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD ls
+# 或
 export besh_url=http://BEACON-HOST:12242?secret=CHANGE_TO_YOUR_PASSWORD
 
 # 列出所有工人（ls / list-sessions / list-workers 等价）
@@ -197,7 +202,7 @@ besh skill --install ~/.workbuddy/skills/   # 安装为 Agent 技能
 
 环境变量：`besh_url`（信标地址）、`besh_secret`（密钥）。也可以用 `-u` / `--secret` 参数临时指定，或 `--json` 输出 JSON。
 
-`besh serve` 会在信标目录生成 `.env`（含 `besh_secret`，以及 `besh_host` / `besh_port` / `besh_url` 的注释示例），信标启动和 CLI 命令都会自动加载当前目录的 `.env`，不必每次 export。该文件含密钥，请勿提交到 git。
+`besh serve` 会在信标目录生成 `.env`（只含 `besh_secret`——监听地址/端口属于 `besh_beacon.py`，不放在这里）。信标启动和 CLI 命令都会自动加载当前目录的 `.env`。该文件含密钥，请勿提交到 git。
 
 ## 可靠性设计
 

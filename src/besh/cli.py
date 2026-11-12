@@ -102,9 +102,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_worker(args: argparse.Namespace) -> int:
     from .worker import run_worker
 
+    # besh worker ID [URL]：URL 可直接写在命令行，不必依赖环境变量
     return run_worker(
         args.worker_id,
-        beacon(args),
+        beacon(args, url=args.beacon_url),
         workdir=args.dir,
         sync=not args.no_sync,
         interval=args.interval,
@@ -564,10 +565,12 @@ def cmd_version(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- 入口
 
 
-def beacon(args: argparse.Namespace) -> Beacon:
+def beacon(args: argparse.Namespace, url: Optional[str] = None) -> Beacon:
     # 工人 / 遥控器也支持当前目录下的 .env（besh_url / besh_secret）
     load_env(".")
-    return Beacon(url=getattr(args, "url", None), secret=getattr(args, "secret", None))
+    return Beacon(
+        url=url or getattr(args, "url", None), secret=getattr(args, "secret", None)
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -604,6 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = subs.add_parser("worker", help="以工人身份接入信标（在闲置算力上运行）")
     p.add_argument("worker_id", help="工人ID，如 phone-1")
+    p.add_argument(
+        "beacon_url",
+        nargs="?",
+        default=None,
+        help="信标地址，如 http://HOST:12242?secret=xxx（也可用 -u 或 besh_url）",
+    )
     p.add_argument("--dir", default=None, help="工作目录，默认 ./WORKER_ID")
     p.add_argument("--no-sync", action="store_true", help="不启动对象存储定时备份")
     p.add_argument("--interval", type=float, default=2.0, help="每条命令之后的节流秒数")
