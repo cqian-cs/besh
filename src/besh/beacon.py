@@ -14,7 +14,9 @@ sqless 会把每个 ``@sqless.api`` 函数同时暴露成：
 所以遥控器、Web 界面、AI Agent 走的是同一套入口。
 """
 
-from __future__ import annotations
+# 注意：这里不能写 ``from __future__ import annotations``。
+# sqless 生成 MCP inputSchema 时按类型对象做 dict 查找（int→integer、str→string…），
+# 加了 future 导入后注解变成字符串，全部会退化成 object，客户端调用会被类型校验拒绝。
 
 import asyncio
 import base64
@@ -454,11 +456,13 @@ async def run(worker: str, command: str, window: str = "", timeout: int = 30) ->
     _wake(worker)
     deadline = time.monotonic() + timeout
     content = ""
+    captured = False
     while time.monotonic() < deadline:
         row = await _request(
             worker, "capture", {"window": window, "lines": 400, "escapes": False}, timeout=6
         )
         if row and row.get("status") == "done":
+            captured = True
             content = row.get("output") or ""
             code, body = _extract_run(content, marker)
             if code is not None:
@@ -471,12 +475,16 @@ async def run(worker: str, command: str, window: str = "", timeout: int = 30) ->
                     "output": body,
                 }
         await asyncio.sleep(0.3)
+    if not captured:
+        msg = f"抓屏失败：工人 {worker} 无响应，或窗口「{window or '当前窗口'}」不存在"
+    else:
+        msg = f"命令在 {timeout}s 内没有结束（可能进入了交互式程序或工人离线）"
     return {
         "suc": False,
         "worker": worker,
         "window": window,
         "cmd_id": cmd["id"],
-        "msg": f"命令在 {timeout}s 内没有结束（可能进入了交互式程序或工人离线）",
+        "msg": msg,
         "output": content[-2000:] if content else "",
     }
 

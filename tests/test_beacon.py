@@ -339,3 +339,45 @@ def test_ensure_secret_appends_missing_key(tmp_path, monkeypatch):
     text = env.read_text(encoding="utf-8")
     assert "# 用户自己的注释" in text  # 原内容保留
     assert "besh_secret=" in text
+
+
+@pytest.mark.asyncio
+async def test_run_reports_capture_failure(bound, monkeypatch):
+    """抓不到屏时，错误信息要指明"抓屏失败"而不是含混的超时。"""
+    async def fake_request(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(B, "_request", fake_request)
+    ret = await B.run("w1", "ls", window="main", timeout=1)
+    assert ret["suc"] is False
+    assert "抓屏失败" in ret["msg"]
+
+
+# ---------------- MCP inputSchema：标量类型不能被标成 object ----------------
+
+def test_mcp_schema_scalar_types(bound):
+    """回归：注解若变成字符串（from __future__ import annotations），
+    sqless 会把所有参数标成 object，导致 MCP 客户端类型校验直接拒绝。"""
+    tools = {t["name"]: t for t in __import__("sqless").server.tools}
+
+    run_props = tools["run"]["inputSchema"]["properties"]
+    assert run_props["worker"]["type"] == "string"
+    assert run_props["command"]["type"] == "string"
+    assert run_props["timeout"]["type"] == "integer"
+
+    win_props = tools["list_windows"]["inputSchema"]["properties"]
+    assert win_props["refresh"]["type"] == "boolean"
+    assert win_props["timeout"]["type"] == "integer"
+
+    cap_props = tools["capture_pane"]["inputSchema"]["properties"]
+    assert cap_props["lines"]["type"] == "integer"
+    assert cap_props["escapes"]["type"] == "boolean"
+
+    # 全局兜底：不应再有参数退化成 object
+    bad = [
+        f"{name}.{p}"
+        for name, tool in tools.items()
+        for p, schema in tool["inputSchema"]["properties"].items()
+        if schema["type"] == "object"
+    ]
+    assert not bad, f"这些参数被误标成 object：{bad}"

@@ -179,3 +179,53 @@ def test_exec_dedup(fake_worker, monkeypatch):
     fake_worker._exec({"id": "c1", "kind": "capture", "args": {}})
     assert handled == ["capture"]
     assert reported[0]["cmd_id"] == "c1"
+
+
+def test_resolve_window_prefers_active(monkeypatch):
+    monkeypatch.setattr(
+        worker_mod,
+        "list_windows",
+        lambda session=SESSION_WORKER: [
+            {"name": "gpu", "active": False},
+            {"name": "main", "active": True},
+        ],
+    )
+    assert worker_mod.resolve_window("") == "main"
+    assert worker_mod.resolve_window("gpu") == "gpu"
+
+
+def test_resolve_window_fallbacks(monkeypatch):
+    monkeypatch.setattr(
+        worker_mod, "list_windows", lambda session=SESSION_WORKER: [{"name": "only"}]
+    )
+    assert worker_mod.resolve_window("") == "only"  # 没有 active 标记时取第一个
+    monkeypatch.setattr(worker_mod, "list_windows", lambda session=SESSION_WORKER: [])
+    assert worker_mod.resolve_window("") == ""  # 没有窗口时保持空
+
+
+def test_send_keys_empty_window_targets_active(recorded, monkeypatch):
+    """不带 :window 时，按键必须发到 SESSION:WINDOW，而不是裸会话。"""
+    monkeypatch.setattr(
+        worker_mod,
+        "list_windows",
+        lambda session=SESSION_WORKER: [{"name": "main", "active": True}],
+    )
+    worker_mod.send_keys("", ["ls -l", "Enter"])
+    assert recorded[-1] == ("send-keys", "-t", "=besh_worker:main", "ls -l", "Enter")
+
+
+def test_capture_empty_window_targets_active(monkeypatch):
+    calls = []
+
+    def fake_tmux_ok(*args, **kwargs):
+        calls.append(args)
+        return True, "$ "
+
+    monkeypatch.setattr(worker_mod, "tmux_ok", fake_tmux_ok)
+    monkeypatch.setattr(
+        worker_mod,
+        "list_windows",
+        lambda session=SESSION_WORKER: [{"name": "main", "active": True}],
+    )
+    assert worker_mod.capture("") == "$ "
+    assert calls[-1][3] == "=besh_worker:main"  # capture-pane ... -t TARGET

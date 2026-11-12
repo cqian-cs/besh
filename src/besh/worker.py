@@ -87,6 +87,23 @@ def target_of(window: str = "", session: str = SESSION_WORKER) -> str:
     return f"={session}:{window}" if window else f"={session}"
 
 
+def resolve_window(window: str = "", session: str = SESSION_WORKER) -> str:
+    """把空窗口解析成会话当前的活动窗口名。
+
+    send-keys / capture-pane 都是 pane 类命令，裸会话目标（``=besh_worker``）
+    在部分 tmux 版本上解析不到 pane，导致"不带 :window 就超时"。
+    统一解析成 ``SESSION:WINDOW`` 形式最稳。
+    """
+    name = safe_window(window)
+    if name:
+        return name
+    windows = list_windows(session)
+    for win in windows:
+        if win.get("active"):
+            return str(win.get("name") or "")
+    return str(windows[0].get("name") or "") if windows else ""
+
+
 def list_windows(session: str = SESSION_WORKER) -> List[dict]:
     fmt = "\t".join(
         [
@@ -143,6 +160,7 @@ def ensure_window(name: str, workdir: str, session: str = SESSION_WORKER) -> Non
 
 
 def capture(window: str, lines: int = 50, escapes: bool = True, session: str = SESSION_WORKER) -> str:
+    window = resolve_window(window, session)
     args = ["capture-pane", "-p", "-t", target_of(window, session), "-S", f"-{max(1, lines)}"]
     if escapes:
         args.append("-e")
@@ -166,6 +184,8 @@ def send_keys(window: str, keys: List[str], literal: bool = False, literal_first
     """
     if not keys:
         return ""
+    # 空窗口 = 会话当前窗口：解析成窗口名，避免裸会话目标在 pane 类命令里失效
+    window = resolve_window(window, session)
     if window:
         ensure_window(window, workdir, session)
     target = target_of(window, session)
