@@ -56,15 +56,21 @@ _REQUEUE_AT: Dict[str, float] = {}
 # --------------------------------------------------------------------- 生命周期
 
 
-def make_cfg(app_file: str) -> dict:
-    """按 README 的约定生成 sqless 的 cfg（相对 besh_beacon.py 所在目录）。"""
-    from .util import DEFAULT_PORT, getenv, getenv_int
+def make_cfg(app_file: str, host: str = "", port: int = 0) -> dict:
+    """按 README 的约定生成 sqless 的 cfg（相对 besh_beacon.py 所在目录）。
+
+    入口程序即配置文件：host/port 由 besh_beacon.py 顶部的 CFG_HOST /
+    CFG_PORT 传入，用户直接改文件即可；环境变量 besh_host / besh_port
+    只在入口程序没写值时兜底。
+    """
+    from .util import DEFAULT_PORT, getenv, getenv_int, load_env
 
     path_this = os.path.dirname(os.path.abspath(app_file)).replace("\\", "/")
+    load_env(path_this)  # 加载信标目录下的 .env（不覆盖真实环境变量）
     secret = getenv("besh_secret") or _read_secret(path_this) or ""
     cfg = {
-        "host": getenv("besh_host", default="0.0.0.0"),
-        "port": getenv_int("besh_port", default=DEFAULT_PORT),
+        "host": str(host or "").strip() or getenv("besh_host") or "0.0.0.0",
+        "port": int(port or getenv_int("besh_port") or DEFAULT_PORT),
         "secret": secret,
         "app_file": os.path.abspath(app_file),
         "path_base_db": os.path.realpath(f"{path_this}/db"),

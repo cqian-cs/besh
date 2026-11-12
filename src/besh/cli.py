@@ -20,6 +20,7 @@ from .__about__ import __version__
 from .client import Beacon
 from .target import parse_target
 from .util import (
+    load_env,
     BeshError,
     DEFAULT_PORT,
     DEFAULT_SYNC_INTERVAL,
@@ -564,6 +565,8 @@ def cmd_version(args: argparse.Namespace) -> int:
 
 
 def beacon(args: argparse.Namespace) -> Beacon:
+    # 工人 / 遥控器也支持当前目录下的 .env（besh_url / besh_secret）
+    load_env(".")
     return Beacon(url=getattr(args, "url", None), secret=getattr(args, "secret", None))
 
 
@@ -593,7 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dir", default=os.getcwd(), help="工作目录（默认当前目录）")
     p.add_argument("--host", default=None, help="监听地址，默认 0.0.0.0")
     p.add_argument("--port", type=int, default=None, help=f"监听端口，默认 {DEFAULT_PORT}")
-    p.add_argument("--secret", default=argparse.SUPPRESS, help="访问密钥，默认读 besh_secret / .besh_secret")
+    p.add_argument("--secret", default=argparse.SUPPRESS, help="访问密钥，默认读 besh_secret（.env 里也会自动加载）")
     p.add_argument("--reset", action="store_true", help="重新生成 besh_beacon.py（旧文件会备份）")
     p.add_argument("--force-web", action="store_true", help="覆盖已存在的 www/index.html")
     p.add_argument("--no-run", action="store_true", help="只生成文件、不启动服务")

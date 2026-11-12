@@ -3,8 +3,11 @@
 # SPDX-License-Identifier: MIT
 """工具函数与目标解析。"""
 
+import os
+
 import pytest
 
+from besh import util as store_mod
 from besh.target import parse_target
 from besh.util import (
     BeshError,
@@ -83,3 +86,22 @@ def test_human_helpers():
 def test_target_str():
     assert str(parse_target("w1:main")) == "w1:main"
     assert str(parse_target("w1")) == "w1"
+
+
+def test_load_env_parses_and_does_not_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("besh_secret", raising=False)
+    monkeypatch.setenv("besh_host", "1.2.3.4")
+    (tmp_path / ".env").write_text(
+        "# 注释行\nbesh_secret='abc=123'\nbesh_host=9.9.9.9\nbesh_port=18080\n\n",
+        encoding="utf-8",
+    )
+    loaded = store_mod.load_env(str(tmp_path))
+    assert loaded["besh_secret"] == "abc=123"  # 引号被去掉
+    assert os.environ["besh_host"] == "1.2.3.4"  # 已存在的环境变量不被覆盖
+    assert os.environ["besh_port"] == "18080"
+    monkeypatch.delenv("besh_port", raising=False)
+    monkeypatch.delenv("besh_secret", raising=False)
+
+
+def test_load_env_missing_file(tmp_path):
+    assert store_mod.load_env(str(tmp_path)) == {}

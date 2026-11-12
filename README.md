@@ -57,8 +57,7 @@ pip install besh
 ### 1. 启动信标（云服务器）
 
 ```bash
-export besh_secret=CHANGE_TO_YOUR_PASSWORD
-besh serve
+besh serve   # 首次运行会生成 .env（含自动生成的 besh_secret），也可自己先 export
 ```
 
 启动时会生成自包含的 `besh_beacon.py`（主程序）和 `www/index.html`（Web 界面），数据存放在 `./db/`。默认监听 `12242` 端口，输出类似：
@@ -68,6 +67,17 @@ besh serve
   浏览器   : http://<HOST>:12242/?secret=xxx
   MCP      : http://<HOST>:12242/mcp  (Authorization: Bearer xxx)
 ```
+
+**入口程序就是配置文件**：`besh_beacon.py` 顶部写着监听地址和端口，直接改、重启即生效：
+
+```python
+# ============ 配置（直接改这里，改完重启生效） ============
+CFG_HOST = "0.0.0.0"   # 监听地址；"0.0.0.0" 表示所有网卡
+CFG_PORT = 8080        # 监听端口
+# =========================================================
+```
+
+也可以用 `besh serve --host --port` 修改，它们会**写进**入口程序（首次生成时烘焙，已存在则原地更新），不用环境变量。改完端口后，工人和遥控器的 `besh_url` 需同步更新。
 
 ### 2. 接入工人（闲置终端）
 
@@ -186,6 +196,8 @@ besh skill --install ~/.workbuddy/skills/   # 安装为 Agent 技能
 | `besh mcp` / `besh skill` | 生成 MCP / Agent 技能配置 |
 
 环境变量：`besh_url`（信标地址）、`besh_secret`（密钥）。也可以用 `-u` / `--secret` 参数临时指定，或 `--json` 输出 JSON。
+
+`besh serve` 会在信标目录生成 `.env`（含 `besh_secret`，以及 `besh_host` / `besh_port` / `besh_url` 的注释示例），信标启动和 CLI 命令都会自动加载当前目录的 `.env`，不必每次 export。该文件含密钥，请勿提交到 git。
 
 ## 可靠性设计
 

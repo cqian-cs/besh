@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Dict
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_PORT = 12242
@@ -42,6 +42,48 @@ def getenv_int(*names: str, default: int = 0) -> int:
         return int(str(val).strip())
     except (TypeError, ValueError):
         return default
+
+
+ENV_FILE = ".env"
+
+
+def load_env(folder: str = ".", overwrite: bool = False) -> Dict[str, str]:
+    """加载目录下的 ``.env`` 文件（KEY=VALUE，``#`` 注释行，默认不覆盖已有环境变量）。
+
+    值两侧的引号会被去掉。返回本次读到的键值对（文件不存在时返回空 dict）。
+    """
+    path = os.path.join(folder, ENV_FILE)
+    loaded: Dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if not key:
+                    continue
+                loaded[key] = value
+                if overwrite or not (os.environ.get(key) or os.environ.get(key.upper())):
+                    os.environ[key] = value
+    except OSError:
+        pass
+    return loaded
+
+
+def write_env(folder: str, pairs: Dict[str, str], header: str = "") -> str:
+    """在目录下生成/覆写 ``.env`` 文件，返回路径。"""
+    path = os.path.join(folder, ENV_FILE)
+    lines = []
+    if header:
+        lines.append(header)
+    for key, value in pairs.items():
+        lines.append(f"{key}={value}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
 
 
 def safe_id(value: Any, what: str = "id") -> str:

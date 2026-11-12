@@ -5,11 +5,13 @@
 
 import asyncio
 import json
+import pathlib
 
 import pytest
 import sqless
 
 import besh.beacon as B
+from besh.util import DEFAULT_PORT
 from tests.fake_worker import FakeShell
 
 
@@ -225,3 +227,104 @@ def test_parse_keys():
     assert B._parse_keys('["ls -l", "Enter"]') == ["ls -l", "Enter"]
     assert B._parse_keys("ls -l") == ["ls -l"]
     assert B._parse_keys("") == []
+
+
+
+
+
+# ---------------- 入口程序即配置文件 ----------------
+
+def test_make_cfg_entry_literals_win(tmp_path, monkeypatch):
+    """入口程序传的 host/port 优先于环境变量。"""
+    monkeypatch.setenv("besh_host", "10.0.0.1")
+    monkeypatch.setenv("besh_port", "19090")
+    cfg = B.make_cfg(tmp_path / "besh_beacon.py", host="127.0.0.1", port=18080)
+    assert cfg["host"] == "127.0.0.1"
+    assert cfg["port"] == 18080
+
+
+def test_make_cfg_env_fallback(tmp_path, monkeypatch):
+    """入口程序没写值时用环境变量，再不行用默认值。"""
+    monkeypatch.delenv("besh_host", raising=False)
+    monkeypatch.delenv("besh_port", raising=False)
+    cfg = B.make_cfg(tmp_path / "besh_beacon.py")
+    assert cfg["host"] == "0.0.0.0"
+    assert cfg["port"] == DEFAULT_PORT
+    monkeypatch.setenv("besh_port", "19090")
+    assert B.make_cfg(tmp_path / "besh_beacon.py")["port"] == 19090
+
+
+def test_write_app_bakes_cfg(tmp_path, monkeypatch):
+    """生成的入口程序顶部带 CFG_HOST/CFG_PORT，改文件即改配置。"""
+    from besh import serve as S
+
+    monkeypatch.delenv("besh_host", raising=False)
+    monkeypatch.delenv("besh_port", raising=False)
+    path, created = S.write_app(str(tmp_path), host="127.0.0.1", port=18080)
+    assert created is True
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    assert 'CFG_HOST = "127.0.0.1"' in text
+    assert "CFG_PORT = 18080" in text
+    assert S.read_cfg(path) == ("127.0.0.1", 18080)
+
+    # 文件已存在时不再生成（保护用户手改的配置）
+    pathlib.Path(path).write_text(text.replace("CFG_PORT = 18080", "CFG_PORT = 18888"), encoding="utf-8")
+    _, created2 = S.write_app(str(tmp_path), host="127.0.0.1", port=17070)
+    assert created2 is False
+    assert "CFG_PORT = 18888" in pathlib.Path(path).read_text(encoding="utf-8")
+
+
+def test_patch_cfg_updates_values(tmp_path, monkeypatch):
+    """serve --port 对已存在的入口程序原地更新配置。"""
+    from besh import serve as S
+
+    monkeypatch.delenv("besh_host", raising=False)
+    monkeypatch.delenv("besh_port", raising=False)
+    path, _ = S.write_app(str(tmp_path), host="0.0.0.0", port=12242)
+    S.patch_cfg(path, host="127.0.0.1", port=19090)
+    assert S.read_cfg(path) == ("127.0.0.1", 19090)
+    # 其余内容未被破坏
+    assert "beacon.bind(cfg, dbs)" in pathlib.Path(path).read_text(encoding="utf-8")
+
+
+# ---------------- .env：环境变量集中配置 ----------------
+
+def test_ensure_secret_writes_env_with_all_vars(tmp_path, monkeypatch):
+    """首次运行生成 .env：besh_secret + host/port/url 注释示例。"""
+    from besh import serve as S
+
+    monkeypatch.delenv("besh_secret", raising=False)
+    value = S.ensure_secret(str(tmp_path), port=18080)
+    assert value  # 返回的是密钥
+    text = (pathlib.Path(str(tmp_path)) / ".env").read_text(encoding="utf-8")
+    assert "besh_secret=" + value in text
+    assert "# besh_host=0.0.0.0" in text
+    assert "# besh_port=18080" in text
+    assert "# besh_url=http://YOUR-PUBLIC-IP:18080?secret=" + value in text
+    assert not (pathlib.Path(str(tmp_path)) / ".besh_secret").exists()  # 不再生成 .besh_secret
+
+
+def test_ensure_secret_reuses_existing_env(tmp_path, monkeypatch):
+    """.env 已有 besh_secret 时直接复用，不重新生成。"""
+    from besh import serve as S
+
+    monkeypatch.delenv("besh_secret", raising=False)
+    env = pathlib.Path(str(tmp_path)) / ".env"
+    env.write_text("besh_secret=my-own-secret\n", encoding="utf-8")
+    value = S.ensure_secret(str(tmp_path))
+    assert value == "my-own-secret"
+    assert env.read_text(encoding="utf-8").count("besh_secret=") == 1
+
+
+def test_ensure_secret_appends_missing_key(tmp_path, monkeypatch):
+    """.env 存在但没有 besh_secret 时追加而不是覆盖整个文件。"""
+    from besh import serve as S
+
+    monkeypatch.delenv("besh_secret", raising=False)
+    env = pathlib.Path(str(tmp_path)) / ".env"
+    env.write_text("# 用户自己的注释\nbesh_url=http://x:1?secret=y\n", encoding="utf-8")
+    value = S.ensure_secret(str(tmp_path))
+    assert value
+    text = env.read_text(encoding="utf-8")
+    assert "# 用户自己的注释" in text  # 原内容保留
+    assert "besh_secret=" in text
