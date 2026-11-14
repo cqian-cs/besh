@@ -7,7 +7,9 @@
 
 * ``./besh_beacon.py`` —— 信标主程序，运行它即为服务端（sqless app）
 * ``./www/index.html`` —— Web 操作界面（WebShell + 文件上传下载）
-* ``./db`` ``./fs``    —— sqless 的数据库与文件目录
+* ``./.env``           —— 环境变量（密钥）
+
+运行时状态全部在内存里，不会生成 db/fs 目录，也不会写任何数据文件。
 """
 
 from __future__ import annotations
@@ -63,8 +65,11 @@ CFG_HOST = "__CFG_HOST__"   # 监听地址；"0.0.0.0" 表示所有网卡
 CFG_PORT = __CFG_PORT__     # 监听端口
 # =========================================================
 
+# 信标状态全部在内存里（见 besh/store.py），这里不创建任何数据库文件。
+# sqless 的 /db、/fs 接口本项目用不到，置空即可，避免误触时落盘。
+dbs = None
+
 cfg = beacon.make_cfg(__file__, host=CFG_HOST, port=CFG_PORT)
-dbs = sqless.DBS(cfg["path_base_db"])
 
 # 注册状态存储与 API 函数
 beacon.bind(cfg, dbs)

@@ -4,7 +4,10 @@
 """信标（beacon）服务端逻辑。
 
 `besh serve` 生成的 ``besh_beacon.py`` 只做三件事：填充 ``cfg``、
-创建 ``dbs``、把本模块的 ``@sqless.api`` 函数交给 sqless 跑起来。
+把本模块的 ``@sqless.api`` 函数交给 sqless 跑起来、启动 HTTP/MCP 服务。
+
+信标的全部状态（工人、命令队列、屏幕缓存）都在内存里，运行时**不写磁盘**
+（见 :mod:`besh.store`），因此长时间运行也不会把服务器磁盘写满。
 
 sqless 会把每个 ``@sqless.api`` 函数同时暴露成：
 

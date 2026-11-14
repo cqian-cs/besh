@@ -6,7 +6,6 @@
 import time
 
 import pytest
-import sqless
 
 from besh import store as store_mod
 from besh.store import Store
@@ -14,8 +13,8 @@ from besh.store import Store
 
 @pytest.fixture()
 def st(tmp_path):
-    dbs = sqless.DBS(str(tmp_path / "db"))
-    return Store(dbs)
+    # 状态全在内存，dbs 不再使用（传 None 也能工作）
+    return Store(None)
 
 
 def test_queue_roundtrip(st):
@@ -62,18 +61,48 @@ def test_requeue_ignores_fresh(st):
     assert st.requeue_stale() == 0
 
 
-def test_restart_recovers_pending(tmp_path):
-    dbs = sqless.DBS(str(tmp_path / "db"))
-    first = Store(dbs)
-    pending = first.add("w1", "capture", {"window": "main"})
-    sent = first.add("w1", "capture", {})
-    first.claim("w1")  # 两条都变成 sent
+def test_state_is_memory_only(tmp_path):
+    """信标状态零落盘：跑一堆操作后目录里不该有任何文件。"""
+    st = Store(None)
+    for i in range(50):
+        cmd = st.add("w1", "run", {"command": f"echo {i}"})
+        st.claim("w1")
+        st.finish(cmd["id"], "x" * 1000, 0)
+        st.put_panes("w1", {"main": "screen"})
+    st.touch("w1", {"host": "h", "windows": [{"name": "main", "active": True}]})
+    st.prune()
 
-    second = Store(sqless.DBS(str(tmp_path / "db")))
-    # sent 状态的命令在重启后会被重新投递
-    recovered = second.claim("w1")
-    ids = {c["id"] for c in recovered}
-    assert pending["id"] in ids or sent["id"] in ids
+    # 内存里有数据，但磁盘上一片空白
+    assert st.get_cmd(cmd["id"])["status"] == "done"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cmd_count_is_capped():
+    """命令记录有上限，超出淘汰最老的已完成项，内存不会越滚越大。"""
+    st = Store(None)
+    for i in range(store_mod.MAX_CMDS + 50):
+        cmd = st.add("w1", "run", {"command": f"echo {i}"})
+        st.claim("w1")
+        st.finish(cmd["id"], "ok", 0)
+    assert len(st._cmds) <= store_mod.MAX_CMDS
+
+
+def test_cmd_output_is_truncated():
+    st = Store(None)
+    cmd = st.add("w1", "run", {})
+    st.claim("w1")
+    st.finish(cmd["id"], "x" * (store_mod.CMD_OUTPUT_LIMIT * 4), 0)
+    assert len(st.get_cmd(cmd["id"])["output"]) == store_mod.CMD_OUTPUT_LIMIT
+
+
+def test_panes_keep_only_tail():
+    """屏幕缓存只留末尾若干行，避免长输出撑爆内存。"""
+    st = Store(None)
+    screen = "\n".join(f"line {i}" for i in range(500))
+    st.put_panes("w1", {"main": screen})
+    content = st.get_pane("w1", "main")["content"]
+    assert len(content.splitlines()) == store_mod.PANE_LINES_MAX
+    assert content.splitlines()[-1] == "line 499"
 
 
 def test_cancel_pending(st):

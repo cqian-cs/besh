@@ -60,7 +60,7 @@ pip install besh
 besh serve   # 首次运行会生成 .env（含自动生成的 besh_secret），也可自己先 export
 ```
 
-启动时会生成自包含的 `besh_beacon.py`（主程序）和 `www/index.html`（Web 界面），数据存放在 `./db/`。默认监听 `12242` 端口，输出类似：
+启动时会生成自包含的 `besh_beacon.py`（主程序）和 `www/index.html`（Web 界面）；**运行时状态全在内存，不写任何数据文件**。默认监听 `12242` 端口，输出类似：
 
 ```
   工人连接 : export besh_url=http://<HOST>:12242?secret=xxx
@@ -206,15 +206,47 @@ besh skill --install ~/.workbuddy/skills/   # 安装为 Agent 技能
 
 ## 可靠性设计
 
-- **命令不丢**：命令入队即落盘（sqlite）。信标重启后，pending 和已投递未回执的命令都会重新排队；工人侧用执行记录去重，最坏情况重复执行一次（at-least-once）。
-- **屏幕秒回**：工人定期把各窗口屏幕快照推给信标缓存，`capture-pane` 无需等待。
-- **投递超时重排**：命令投递后 120 秒无回执，自动重新排队（工人可能已重启）。
-- **低磁盘 IO**：屏幕快照只上报内容变化的窗口、压缩传输，且只缓存在信标内存（不落盘）；工人心跳每 20 秒最多写一次库（meta 变化时立即写）；命令历史每 10 分钟清理一次。空闲时不产生磁盘写入。
+- **运行时零磁盘写入**：信标的全部状态（工人表、命令队列、屏幕缓存）都在内存里，不建数据库、不写 WAL、不落任何文件。机器人式的刷屏、心跳和历史不会再把服务器磁盘写满；信标进程重启后状态自然清空，工人会自动重连并重新注册。
+- **内存有硬上限**：命令记录最多 1000 条（单条输出 ≤64KB，10 分钟后老输出裁到 2KB），屏幕缓存每窗口只留末尾 60 行，工人表最多 200 个，超出即淘汰最旧项。典型 10 个工人总占用只有几 MB，不随运行时间增长。
+- **命令不丢（进程内）**：命令在内存队列里排队；投递后 120 秒无回执自动重排（工人可能已重启）。工人侧按命令 ID 去重，最坏情况重复执行一次（at-least-once）。信标进程重启会清空队列，未完成的命令需要客户端重发。
+- **屏幕秒回**：工人只把内容变化的窗口推给信标缓存（压缩传输），`capture-pane` 无需等待；空闲时完全不推送，也就没有任何写盘和网络流量。
 - **安全模型**：单一密钥认证（信标侧）；工人本身处在容器 / 虚拟机内，不提供额外的安全隔离。
+
+## 开机自启（systemd）
+
+信标不落盘，可以放心交给 systemd 托管，崩溃或重启后自动拉起（工人会自己重连）：
+
+```ini
+# /etc/systemd/system/besh-beacon.service
+[Unit]
+Description=besh beacon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/besh-beacon
+EnvironmentFile=/opt/besh-beacon/.env
+ExecStart=/usr/bin/python3 /opt/besh-beacon/besh_beacon.py
+Restart=always
+RestartSec=3
+# 日志只进 journald，避免写满磁盘
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now besh-beacon
+journalctl -u besh-beacon -f      # 看日志，用 --vacuum-size=64M 限制体积
+```
 
 ## 实现细节
 
-1. 信标基于 [sqless](https://github.com/cqian-cs/sqless) 框架（简易单用户认证 + sqlite 数据库 + 函数转 API + 函数转 MCP）。`besh serve` 会在当前路径通过 `sqless --app besh_beacon.py` 生成服务端代码。
+1. 信标基于 [sqless](https://github.com/cqian-cs/sqless) 框架（单用户认证 + 函数转 API + 函数转 MCP）。状态存储换成了纯内存实现（`besh/store.py`），sqless 的 sqlite 表与本项目无关，`/db`、`/fs` 接口不启用。`besh serve` 会在当前路径通过 `sqless --app besh_beacon.py` 生成服务端代码。
 2. 工人内部跑两个 tmux 会话：`besh_worker`（窗口与命令执行）和 `besh_sync`（定时 rclone 备份）。
 3. 遥控器客户端只依赖 Python 标准库。
 
