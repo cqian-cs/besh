@@ -24,6 +24,7 @@ import json
 import os
 import re
 import time
+import zlib
 from typing import Any, Dict, List, Optional
 
 import sqless
@@ -54,6 +55,16 @@ _WAKE: Dict[str, asyncio.Event] = {}
 _RESULT: Dict[str, asyncio.Event] = {}
 # requeue_stale 的节流
 _REQUEUE_AT: Dict[str, float] = {}
+# 工人心跳写库的节流（每次 poll 都写库会让磁盘 IO 飙升）
+_TOUCH_AT: Dict[str, float] = {}
+# 命令历史/过期数据清理的节流
+_PRUNE_AT: float = 0.0
+
+# 心跳最小写入间隔（秒）；重连或 meta 变化时会立即写。在线判定阈值是 45s，
+# 这里留足余量：空闲工人每 20 秒最多一次小事务，磁盘几乎无感。
+TOUCH_SECONDS = 20.0
+# 清理间隔（秒）
+PRUNE_SECONDS = 600.0
 
 
 # --------------------------------------------------------------------- 生命周期
@@ -141,6 +152,42 @@ def _wake(worker: str) -> None:
     ev = _WAKE.get(worker)
     if ev is not None:
         ev.set()
+
+
+# 上次写入库的 meta 摘要：meta 没变就不写，避免每次 poll 都落盘
+_TOUCH_META: Dict[str, int] = {}
+
+
+def _touch(worker: str, meta: Optional[dict] = None) -> None:
+    """写工人心跳，但做节流：meta 变化立即写，否则每 TOUCH_SECONDS 写一次。
+
+    长轮询下每个工人每 20 秒就会 poll 一次，若每次都 upsert，磁盘写入会
+    随工人数线性上升（WAL 持续增长、频繁 checkpoint）。
+    """
+    now = time.monotonic()
+    digest = None
+    if meta is not None:
+        digest = hash(json.dumps(meta, sort_keys=True, default=str))
+    changed = digest is not None and _TOUCH_META.get(worker) != digest
+    if not changed and now - _TOUCH_AT.get(worker, 0.0) < TOUCH_SECONDS:
+        return
+    _TOUCH_AT[worker] = now
+    if digest is not None:
+        _TOUCH_META[worker] = digest
+    store().touch(worker, meta or {})
+    windows = (meta or {}).get("windows")
+    if isinstance(windows, list) and windows:
+        names = [str(w.get("name") or "") for w in windows if isinstance(w, dict)]
+        store().prune_panes(worker, names)
+
+
+def _prune_due() -> bool:
+    global _PRUNE_AT
+    now = time.monotonic()
+    if now - _PRUNE_AT < PRUNE_SECONDS:
+        return False
+    _PRUNE_AT = now
+    return True
 
 
 def _wake_event(worker: str) -> asyncio.Event:
@@ -690,16 +737,17 @@ async def poll(worker: str, meta: str = "", wait: int = 20) -> dict:
     info = _json_loads(meta, {})
     if not isinstance(info, dict):
         info = {}
-    store().touch(worker, info)
+    _touch(worker, info)
     timeout = max(0, min(to_int(wait, 20), 55))
     deadline = time.monotonic() + timeout
-    last_touch = time.monotonic()
     while True:
         ev = _wake_event(worker)
         ev.clear()
         if time.monotonic() - _REQUEUE_AT.get(worker, 0) > 10:
             _REQUEUE_AT[worker] = time.monotonic()
             store().requeue_stale()
+        if _prune_due():
+            store().prune()
         cmds = store().claim(worker, limit=16)
         if cmds:
             return {"suc": True, "data": cmds, "server": now_iso()}
@@ -709,9 +757,7 @@ async def poll(worker: str, meta: str = "", wait: int = 20) -> dict:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return {"suc": True, "data": [], "server": now_iso()}
-        if time.monotonic() - last_touch > 5:
-            last_touch = time.monotonic()
-            store().touch(worker, {})
+        _touch(worker)  # 节流：至少每 TOUCH_SECONDS 保活一次
         try:
             await asyncio.wait_for(ev.wait(), min(remaining, 10))
         except asyncio.TimeoutError:
@@ -734,12 +780,30 @@ def report(cmd_id: str, output: str = "", exit_code: int = 0, status: str = "don
     return {"suc": True}
 
 
+def _decode_panes(raw: Any) -> dict:
+    """解析屏幕快照负载：兼容压缩格式（"z:" + base64(zlib(JSON))）与纯 JSON。
+
+    压缩是为了把请求体压小：sqless 会把整个请求体打到 stdout，未压缩时
+    一次全屏推送能产生上百 KB 日志写入。
+    """
+    text = raw if isinstance(raw, str) else str(raw or "")
+    if text.startswith("z:"):
+        try:
+            blob = base64.b64decode(text[2:])
+            data = json.loads(zlib.decompress(blob).decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (ValueError, OSError):
+            return {}
+    data = _json_loads(text, {})
+    return data if isinstance(data, dict) else {}
+
+
 @sqless.api
 def panes(worker: str, panes_json: str = "") -> dict:
     """[工人专用] 批量上报各窗口的屏幕快照，供 capture-pane 秒回。"""
     worker = _need_worker(worker)
-    data = _json_loads(panes_json, {})
-    if not isinstance(data, dict):
+    data = _decode_panes(panes_json)
+    if not data:
         return {"suc": False, "msg": "panes_json 需要是 JSON 对象"}
     count = store().put_panes(worker, {str(k): str(v) for k, v in data.items()})
     return {"suc": True, "count": count}

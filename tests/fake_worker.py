@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
+import zlib
 from typing import Dict, List, Optional
 
 from besh.client import Beacon
@@ -127,6 +129,7 @@ class FakeWorker(threading.Thread):
         self.error: Optional[str] = None
 
     def run(self) -> None:  # pragma: no cover - 线程主体
+        last_panes = {}
         try:
             while not self.stop_flag.is_set():
                 ret = self.client.poll(self.worker, self.shell.meta(), wait=self.wait)
@@ -142,11 +145,17 @@ class FakeWorker(threading.Thread):
                         exit_code=code,
                         status=status,
                     )
-                self.client.call(
-                    "panes",
-                    worker=self.worker,
-                    panes_json=json.dumps({w: self.shell.pane(w) for w in self.shell.windows}),
-                )
+                # 与真工人一致：只上报内容有变化的窗口，且用压缩负载
+                panes = {w: self.shell.pane(w) for w in self.shell.windows}
+                changed = {w: c for w, c in panes.items() if last_panes.get(w) != c}
+                last_panes = panes
+                if changed:
+                    blob = zlib.compress(json.dumps(changed).encode("utf-8"), 6)
+                    self.client.call(
+                        "panes",
+                        worker=self.worker,
+                        panes_json="z:" + base64.b64encode(blob).decode("ascii"),
+                    )
         except Exception as exc:  # pragma: no cover
             self.error = f"{type(exc).__name__}: {exc}"
 

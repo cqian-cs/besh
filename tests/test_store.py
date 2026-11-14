@@ -130,3 +130,12 @@ def test_prune_keeps_recent(st):
     st.finish(cmd["id"], "x", 0)
     st.prune()
     assert st.get_cmd(cmd["id"]) is not None
+
+
+def test_prune_panes_drops_closed_windows(st):
+    st.put_panes("w1", {"main": "$ a", "gpu": "$ b"})
+    st.put_panes("w2", {"main": "$ c"})
+    dropped = st.prune_panes("w1", ["main"])
+    assert dropped == 1
+    assert set(st.get_panes("w1")) == {"main"}
+    assert set(st.get_panes("w2")) == {"main"}  # 别的工人不受影响

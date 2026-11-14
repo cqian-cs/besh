@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import random
@@ -21,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,6 +41,8 @@ from .util import (
 )
 
 SESSION_WORKER = "besh_worker"
+# 推送给信标的屏幕快照行数（WebShell 够看，live capture 仍可要更多）
+PANE_LINES = 120
 SESSION_SYNC = "besh_sync"
 
 # 空闲时若长轮询“秒回空”（小于该秒数），说明没起到阻塞作用，需要退避防空转
@@ -442,22 +447,44 @@ class Worker:
 
     def _pane_loop(self) -> None:
         """定期把所有窗口的屏幕推给信标：Web 界面/遥控器 capture 才能秒回。"""
+        last: Dict[str, str] = {}
         while not self.stop:
             try:
-                windows = list_windows()
-                panes: Dict[str, str] = {}
-                for win in windows[:12]:
-                    panes[win["name"]] = capture(win["name"], lines=200, escapes=True)
-                if panes:
-                    self.beacon.call(
-                        "panes", worker=self.id, panes_json=json.dumps(panes), _timeout=15
-                    )
+                self._push_panes(last)
             except Exception:
                 pass
             for _ in range(int(self.pane_interval * 10)):
                 if self.stop:
                     return
                 time.sleep(0.1)
+
+    def _push_panes(self, last: Dict[str, str]) -> bool:
+        """只上报内容有变化的窗口；全部没变就不发请求（空闲时不产生任何写入）。
+
+        ``last`` 保存每个窗口上次内容的摘要，用于去重。窗口被关掉时同步清理，
+        避免信标里残留旧屏幕。
+
+        负载用 zlib 压缩后 base64 传输：sqless 会把请求体整个打印到 stdout，
+        未压缩时一次全屏推送就是上百 KB 日志——这是磁盘 IO 飙升的主因。
+        """
+        windows = list_windows()
+        names = {str(w.get("name") or "") for w in windows}
+        for gone in [k for k in last if k not in names]:
+            last.pop(gone, None)
+        changed: Dict[str, str] = {}
+        for win in windows[:12]:
+            name = str(win.get("name") or "")
+            content = capture(name, lines=PANE_LINES, escapes=True)
+            digest = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()
+            if last.get(name) != digest:
+                changed[name] = content
+                last[name] = digest
+        if not changed:
+            return False
+        blob = zlib.compress(json.dumps(changed, ensure_ascii=False).encode("utf-8"), 6)
+        payload = "z:" + base64.b64encode(blob).decode("ascii")
+        self.beacon.call("panes", worker=self.id, panes_json=payload, _timeout=15)
+        return True
 
     # ---------------------------------------------------------------- 命令执行
 

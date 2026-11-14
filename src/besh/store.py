@@ -40,6 +40,8 @@ class Store:
         self.t_cmds = dbs["besh-cmds"]
         self.t_panes = dbs["besh-panes"]
         self._queues: Dict[str, List[dict]] = {}
+        # 屏幕快照缓存（只放内存，见 put_panes 的说明）
+        self._panes: Dict[str, Dict[str, dict]] = {}
         self._lock = threading.RLock()
         self._restore()
 
@@ -250,28 +252,43 @@ class Store:
     # ------------------------------------------------------------------ 屏幕
 
     def put_panes(self, worker: str, panes: Dict[str, str]) -> int:
+        """屏幕快照只放内存：它是"秒回"用的缓存，不需要持久化。
+
+        落盘会让磁盘 IO 随刷屏频率线性上升（每次全屏推送就是上百 KB 的
+        sqlite 写入），信标重启后缓存自然失效，工人下一次推送就会补上。
+        """
         stamp = now_iso()
-        batch = {}
-        for window, content in panes.items():
-            if not isinstance(window, str) or not isinstance(content, str):
-                continue
-            batch[f"{worker}:{window}"] = {
-                "worker": worker,
-                "window": window,
-                "content": content,
-                "updated_at": stamp,
-            }
-        if batch:
-            self.t_panes.upsert(batch)
-        return len(batch)
+        with self._lock:
+            bucket = self._panes.setdefault(worker, {})
+            for window, content in panes.items():
+                if not isinstance(window, str) or not isinstance(content, str):
+                    continue
+                bucket[window] = {
+                    "worker": worker,
+                    "window": window,
+                    "content": content,
+                    "updated_at": stamp,
+                }
+            return len(bucket)
 
     def get_panes(self, worker: str) -> Dict[str, dict]:
-        rows = [dict(r) for r in self.t_panes.iter("") if r.get("worker") == worker]
-        return {r.get("window"): r for r in rows if r.get("window")}
+        with self._lock:
+            return dict(self._panes.get(worker) or {})
 
     def get_pane(self, worker: str, window: str) -> Optional[dict]:
-        row = self.t_panes.get_item(f"{worker}:{window}")
+        with self._lock:
+            row = (self._panes.get(worker) or {}).get(window)
         return dict(row) if row else None
+
+    def prune_panes(self, worker: str, valid: List[str]) -> int:
+        """删掉已经关掉的窗口的屏幕缓存，避免缓存无限增长。"""
+        keep = set(valid)
+        with self._lock:
+            bucket = self._panes.get(worker) or {}
+            gone = [name for name in bucket if name not in keep]
+            for name in gone:
+                bucket.pop(name, None)
+        return len(gone)
 
 
 def _seconds_since(stamp: str) -> float:

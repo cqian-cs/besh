@@ -276,3 +276,52 @@ def test_run_executes_locally(fake_worker, monkeypatch):
     assert (status, code) == ("done", 0)
     assert "ran: echo hi" in out
     assert "__BESH_" not in out
+
+
+def test_push_panes_skips_unchanged(fake_worker, monkeypatch):
+    """屏幕没变化就不发请求——空闲工人不产生任何写入。"""
+    calls = []
+    monkeypatch.setattr(worker_mod, "list_windows", lambda session=SESSION_WORKER: [{"name": "main"}])
+    monkeypatch.setattr(worker_mod, "capture", lambda *a, **k: "$ idle")
+    monkeypatch.setattr(fake_worker.beacon, "call", lambda *a, **k: calls.append(k) or {"suc": True})
+
+    last = {}
+    assert fake_worker._push_panes(last) is True   # 第一次有内容 → 上报
+    assert fake_worker._push_panes(last) is False  # 内容相同 → 不上报
+    assert len(calls) == 1
+    assert calls[0]["panes_json"].startswith("z:")  # 压缩负载，减少日志/写盘
+
+
+def test_push_panes_reports_changes(fake_worker, monkeypatch):
+    """屏幕内容变化（比如命令输出）→ 立即上报。"""
+    calls = []
+    state = {"screen": "$ a"}
+    monkeypatch.setattr(worker_mod, "list_windows", lambda session=SESSION_WORKER: [{"name": "main"}])
+    monkeypatch.setattr(worker_mod, "capture", lambda *a, **k: state["screen"])
+    monkeypatch.setattr(fake_worker.beacon, "call", lambda *a, **k: calls.append(k) or {"suc": True})
+
+    last = {}
+    fake_worker._push_panes(last)
+    state["screen"] = "$ b"
+    assert fake_worker._push_panes(last) is True
+    assert len(calls) == 2
+
+
+def test_push_panes_drops_closed_window(fake_worker, monkeypatch):
+    """窗口关掉后，本地摘要也跟着清掉，避免信标里残留旧屏幕。"""
+    calls = []
+    screens = {"main": "$ a", "gpu": "$ b"}
+    monkeypatch.setattr(
+        worker_mod,
+        "list_windows",
+        lambda session=SESSION_WORKER: [{"name": n} for n in screens],
+    )
+    monkeypatch.setattr(worker_mod, "capture", lambda name, *a, **k: screens.get(name, ""))
+    monkeypatch.setattr(fake_worker.beacon, "call", lambda *a, **k: calls.append(k) or {"suc": True})
+
+    last = {}
+    fake_worker._push_panes(last)
+    assert set(last) == {"main", "gpu"}
+    screens.pop("gpu")
+    fake_worker._push_panes(last)
+    assert set(last) == {"main"}

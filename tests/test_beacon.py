@@ -42,6 +42,9 @@ def bound(tmp_path):
     B._WAKE.clear()
     B._RESULT.clear()
     B._REQUEUE_AT.clear()
+    B._TOUCH_AT.clear()
+    B._TOUCH_META.clear()
+    B._PRUNE_AT = 0.0
     B.bind({"path_base_db": str(tmp_path / "db")}, dbs)
     return dbs
 
@@ -381,3 +384,36 @@ def test_mcp_schema_scalar_types(bound):
         if schema["type"] == "object"
     ]
     assert not bad, f"这些参数被误标成 object：{bad}"
+
+
+@pytest.mark.asyncio
+async def test_touch_is_throttled(bound, monkeypatch):
+    """心跳写库要节流：meta 没变就不写，变了立即写。"""
+    calls = []
+    real_touch = B.store().touch
+    monkeypatch.setattr(B.store(), "touch", lambda w, m=None: calls.append((w, m)) or real_touch(w, m))
+
+    meta = {"host": "h", "windows": [{"name": "main", "active": True}]}
+    B._touch("w1", meta)
+    B._touch("w1", dict(meta))   # 同内容，节流期内不写
+    assert len(calls) == 1
+
+    meta2 = dict(meta, active="gpu")  # meta 变化 → 立即写
+    B._touch("w1", meta2)
+    assert len(calls) == 2
+
+
+def test_panes_accepts_compressed_payload(bound):
+    """屏幕快照支持压缩负载（省日志和磁盘写入）。"""
+    import base64 as _b64
+    import zlib as _zlib
+
+    payload = "z:" + _b64.b64encode(
+        _zlib.compress(json.dumps({"main": "$ hi"}).encode())
+    ).decode()
+    ret = B.panes("w1", payload)
+    assert ret["suc"] is True
+    assert B.store().get_pane("w1", "main")["content"] == "$ hi"
+
+    # 纯 JSON 仍然兼容（老工人）
+    assert B.panes("w1", json.dumps({"main": "$ old"}))["suc"] is True
